@@ -1,17 +1,21 @@
 from sqlmodel import create_engine, Session
 from contextlib import contextmanager
+from dotenv import load_dotenv
+import os
 
-DATABASE_URL = "postgresql://postgres:813883@localhost/todoapp"
-engine = create_engine(DATABASE_URL)
+load_dotenv()
+DATABASE_URL = os.environ.get("DATABASE_URL")
+if not DATABASE_URL:
+    raise ValueError("No DATABASE_URL environment variable set")
 
-@contextmanager
+engine = create_engine(DATABASE_URL, echo=True)
+
+# Use dependency injection to get the session
 def get_session():
-    session = Session(engine)
-    try:
-        yield session
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
+    with Session(engine) as session:
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
