@@ -19,3 +19,4 @@ def get_session():
         except Exception:
             session.rollback()
             raise
+

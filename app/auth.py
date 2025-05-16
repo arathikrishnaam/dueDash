@@ -7,8 +7,8 @@ from datetime import datetime, timedelta, timezone
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlmodel import Session, select
-from database import get_session
-from models import User
+from app.db.database import get_session
+from app.models import User
 
 load_dotenv()  # Load environment variables from .env file
 

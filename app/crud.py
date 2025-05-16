@@ -1,5 +1,5 @@
 from sqlmodel import select, Session
-from models import Todo
+from app.models import Todo
 
 def get_todo(db: Session, todo_id: int, user_id: int):
     statement = select(Todo).where(Todo.id == todo_id, Todo.user_id == user_id)

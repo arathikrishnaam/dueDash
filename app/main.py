@@ -1,9 +1,9 @@
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlmodel import Session, select
-from database import get_session
-from models import User, UserCreate, Todo, TodoCreate, TodoUpdate
-from auth import get_password_hash, create_access_token, get_user, get_current_user, verify_password
+from app.db.database import get_session
+from app.models import User, UserCreate, Todo, TodoCreate, TodoUpdate
+from app.auth import get_password_hash, create_access_token, get_user, get_current_user, verify_password
 from datetime import datetime
 from fastapi.middleware.cors import CORSMiddleware
 
