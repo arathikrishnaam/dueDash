@@ -6,6 +6,8 @@ from app.models import User, UserCreate, Todo, TodoCreate, TodoUpdate
 from app.auth import get_password_hash, create_access_token, get_user, get_current_user, verify_password
 from datetime import datetime
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi import WebSocket, WebSocketDisconnect
+from typing import List, Dict
 
 app = FastAPI(title="dueDash API", description="A simple todo application API")
 
@@ -131,3 +133,44 @@ def delete_todo(todo_id: int, db: Session = Depends(get_session), current_user: 
     db.delete(todo)
     db.commit()
     return {"message": "Todo deleted"}
+
+#web socket 
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections = {}
+
+    async def connect(self, user_id: int, websocket: WebSocket):
+        await websocket.accept()
+        if user_id not in self.active_connections:
+            self.active_connections[user_id] = []
+        self.active_connections[user_id].append(websocket)
+
+    def disconnect(self, user_id: int, websocket: WebSocket):
+        if user_id in self.active_connections:
+            self.active_connections[user_id].remove(websocket)
+            if not self.active_connections[user_id]:
+                del self.active_connections[user_id]
+
+    async def broadcast(self, message: str, sender_id: int):
+        for user_id, connections in self.active_connections.items():
+            if user_id != sender_id:
+                for connection in connections:
+                    await connection.send_text(message)
+
+manager = ConnectionManager()
+
+@app.websocket("/ws/{user_id}")
+async def websocket_endpoint(websocket: WebSocket, user_id: int):
+    await manager.connect(user_id, websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            await manager.broadcast(f"User {user_id}: {data}", user_id)
+    except WebSocketDisconnect:
+        manager.disconnect(user_id, websocket)
+        await manager.broadcast(f"User {user_id} left", user_id)
+
+@app.get("/")
+def read_root():
+    return {"message": "WebSocket server is running"}
