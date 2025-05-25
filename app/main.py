@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, Query
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlmodel import Session, select
 from app.db.database import get_session
@@ -8,6 +8,9 @@ from datetime import datetime
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import WebSocket, WebSocketDisconnect
 from typing import List, Dict
+import json
+import asyncio
+import os
 
 app = FastAPI(title="dueDash API", description="A simple todo application API")
 
@@ -134,43 +137,128 @@ def delete_todo(todo_id: int, db: Session = Depends(get_session), current_user: 
     db.commit()
     return {"message": "Todo deleted"}
 
-#web socket 
-
+# WebSocket Implementation
 class ConnectionManager:
     def __init__(self):
-        self.active_connections = {}
+        self.active_connections: Dict[WebSocket, str] = {}  # websocket -> username
 
-    async def connect(self, user_id: int, websocket: WebSocket):
+    async def connect(self, websocket: WebSocket, username: str):
         await websocket.accept()
-        if user_id not in self.active_connections:
-            self.active_connections[user_id] = []
-        self.active_connections[user_id].append(websocket)
+        self.active_connections[websocket] = username
+        await self.broadcast_system(f"{username} joined the chat")
 
-    def disconnect(self, user_id: int, websocket: WebSocket):
-        if user_id in self.active_connections:
-            self.active_connections[user_id].remove(websocket)
-            if not self.active_connections[user_id]:
-                del self.active_connections[user_id]
+    def disconnect(self, websocket: WebSocket) -> str:
+        return self.active_connections.pop(websocket, None)
 
-    async def broadcast(self, message: str, sender_id: int):
-        for user_id, connections in self.active_connections.items():
-            if user_id != sender_id:
-                for connection in connections:
-                    await connection.send_text(message)
+    async def broadcast_system(self, message: str):
+        if not self.active_connections:
+            return
+        disconnected = []
+        for websocket in self.active_connections:
+            try:
+                await websocket.send_text(f"System: {message}")
+            except:
+                disconnected.append(websocket)
+        
+        # Clean up disconnected websockets
+        for ws in disconnected:
+            self.active_connections.pop(ws, None)
+
+    async def broadcast(self, message: str, sender_websocket: WebSocket = None):
+        if not self.active_connections:
+            return
+        disconnected = []
+        for websocket, username in self.active_connections.items():
+            if websocket != sender_websocket:
+                try:
+                    await websocket.send_text(message)
+                except:
+                    disconnected.append(websocket)
+        
+        # Clean up disconnected websockets
+        for ws in disconnected:
+            self.active_connections.pop(ws, None)
 
 manager = ConnectionManager()
 
-@app.websocket("/ws/{user_id}")
-async def websocket_endpoint(websocket: WebSocket, user_id: int):
-    await manager.connect(user_id, websocket)
+
+def verify_token_and_get_user(token: str, db: Session) -> User:
+    """Verify JWT token and return user using existing auth system"""
+    try:
+        from jose import jwt, JWTError
+        import os
+        
+        SECRET_KEY = os.environ.get("SECRET_KEY")
+        ALGORITHM = os.environ.get("ALGORITHM", "HS256")
+        
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        
+        # Verify token type
+        token_type = payload.get("type")
+        if token_type != "access":
+            raise HTTPException(status_code=401, detail="Invalid token type")
+            
+        username: str = payload.get("sub")
+        if username is None:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        
+        user = get_user(db, username)
+        if user is None:
+            raise HTTPException(status_code=401, detail="User not found")
+        return user
+        
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token has expired")
+    except jwt.JWTClaimsError:
+        raise HTTPException(status_code=401, detail="Invalid token claims")
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Could not validate credentials")
+    except Exception as e:
+        print(f"Token verification error: {e}")
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+@app.websocket("/ws/todos")
+async def websocket_endpoint(
+    websocket: WebSocket,
+    token: str = Query(...),
+    db: Session = Depends(get_session)
+):
+    try:
+        # Verify token and get user
+        user = verify_token_and_get_user(token, db)
+        
+        # Connect with username
+        await manager.connect(websocket, user.username)
+        
+        while True:
+            data = await websocket.receive_text()
+            # Broadcast with username
+            await manager.broadcast(
+                message=f"{user.username}: {data}",
+                sender_websocket=websocket
+            )
+            
+    except HTTPException:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+    except WebSocketDisconnect:
+        username = manager.disconnect(websocket)
+        if username:
+            await manager.broadcast_system(f"{username} left the chat")
+    except Exception as e:
+        print(f"WebSocket error: {e}")
+        await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
+
+# Simple WebSocket without authentication (for testing)
+@app.websocket("/ws/test")
+async def websocket_test_endpoint(websocket: WebSocket):
+    await websocket.accept()
     try:
         while True:
             data = await websocket.receive_text()
-            await manager.broadcast(f"User {user_id}: {data}", user_id)
+            await websocket.send_text(f"Echo: {data}")
     except WebSocketDisconnect:
-        manager.disconnect(user_id, websocket)
-        await manager.broadcast(f"User {user_id} left", user_id)
+        print("Client disconnected")
 
-@app.get("/")
-def read_root():
-    return {"message": "WebSocket server is running"}
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
